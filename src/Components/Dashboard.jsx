@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Notifications from './Notifications';
+import NotificationSettings from './NotificationSettings';
+import Analytics from './Analytics';
 import './dashboard.css';
 
 const Dashboard = () => {
@@ -10,6 +12,8 @@ const Dashboard = () => {
   const [message, setMessage] = useState('');
   const [user, setUser] = useState(null);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   
   // Search and filter states
@@ -22,6 +26,7 @@ const Dashboard = () => {
   const [backgroundJobStatus, setBackgroundJobStatus] = useState('idle');
   const [lastUpdate, setLastUpdate] = useState(null);
 
+  // Real-time notification polling
   useEffect(() => {
     const token = localStorage.getItem('token');
     const userData = JSON.parse(localStorage.getItem('user'));
@@ -32,27 +37,66 @@ const Dashboard = () => {
       fetchNotificationCount();
       fetchCategories();
       setLastUpdate(new Date().toLocaleTimeString());
+      
+      // Set up real-time notification polling (every 30 seconds)
+      const notificationInterval = setInterval(() => {
+        fetchNotificationCount();
+      }, 30000);
+      
+      return () => clearInterval(notificationInterval);
     }
   }, [searchTerm, selectedCategory, selectedStatus]);
 
-  const fetchItems = async () => {
+  // Utility function to handle API calls with token validation
+  const apiCall = async (url, options = {}) => {
     try {
       const token = localStorage.getItem('token');
+      console.log('Making API call to:', url);
+      console.log('Token:', token ? 'Present' : 'Missing');
+      
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...options.headers
+        }
+      });
+
+      console.log('Response status:', response.status);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.log('Error response:', errorData);
+        
+        if (errorData.code === 'TOKEN_EXPIRED' || errorData.code === 'INVALID_TOKEN') {
+          setMessage('Session expired. Please log in again.');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.reload();
+          return null;
+        }
+        throw new Error(errorData.message || 'API call failed');
+      }
+
+      const data = await response.json();
+      console.log('Success response:', data);
+      return data;
+    } catch (error) {
+      console.error('API call error:', error);
+      throw error;
+    }
+  };
+
+  const fetchItems = async () => {
+    try {
       const params = new URLSearchParams();
       if (searchTerm) params.append('search', searchTerm);
       if (selectedCategory !== 'all') params.append('category', selectedCategory);
       if (selectedStatus !== 'all') params.append('status', selectedStatus);
       
-      const response = await fetch(`http://localhost:5000/api/items?${params}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setItems(data);
-      }
+      const data = await apiCall(`http://localhost:5000/api/items?${params}`);
+      if (data) setItems(data);
     } catch (error) {
       console.error('Error fetching items:', error);
     }
@@ -60,17 +104,8 @@ const Dashboard = () => {
 
   const fetchCategories = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/categories', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setCategories(data);
-      }
+      const data = await apiCall('http://localhost:5000/api/categories');
+      if (data) setCategories(data);
     } catch (error) {
       console.error('Error fetching categories:', error);
     }
@@ -78,17 +113,8 @@ const Dashboard = () => {
 
   const fetchNotificationCount = async () => {
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/notifications', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setUnreadNotifications(data.filter(n => !n.read).length);
-      }
+      const data = await apiCall('http://localhost:5000/api/notifications');
+      if (data) setUnreadNotifications(data.filter(n => !n.read).length);
     } catch (error) {
       console.error('Error fetching notification count:', error);
     }
@@ -99,25 +125,19 @@ const Dashboard = () => {
     setMessage('Running background jobs...');
     
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/trigger-background-jobs', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const data = await apiCall('http://localhost:5000/api/trigger-background-jobs', {
+        method: 'POST'
       });
       
-      if (response.ok) {
+      if (data) {
         setMessage('Background jobs completed successfully!');
         setLastUpdate(new Date().toLocaleTimeString());
         // Refresh data
         fetchItems();
         fetchNotificationCount();
-      } else {
-        setMessage('Background jobs failed');
       }
     } catch (error) {
-      setMessage('Error running background jobs');
+      setMessage(`Error running background jobs: ${error.message}`);
     }
     
     setBackgroundJobStatus('idle');
@@ -128,30 +148,50 @@ const Dashboard = () => {
     setLoading(true);
     setMessage('');
 
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/items', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(newItem)
-      });
+    // Validate form data
+    if (!newItem.name.trim()) {
+      setMessage('Item name is required');
+      setLoading(false);
+      return;
+    }
 
-      const data = await response.json();
+    if (!newItem.expiryDate) {
+      setMessage('Expiry date is required');
+      setLoading(false);
+      return;
+    }
+
+    // Check if expiry date is in the future
+    const expiryDate = new Date(newItem.expiryDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    if (expiryDate < today) {
+      setMessage('Expiry date must be in the future');
+      setLoading(false);
+      return;
+    }
+
+    try {
+      console.log('Adding item:', newItem);
+      const data = await apiCall('http://localhost:5000/api/items', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: newItem.name.trim(),
+          category: newItem.category,
+          expiryDate: newItem.expiryDate
+        })
+      });
       
-      if (response.ok) {
+      if (data) {
         setMessage('Item added successfully!');
         setNewItem({ name: '', category: 'Other', expiryDate: '' });
         setShowAddForm(false);
         fetchItems();
         fetchCategories();
-      } else {
-        setMessage(data.message || 'Failed to add item');
       }
     } catch (error) {
-      setMessage('Network error. Please try again.');
+      setMessage(`Error adding item: ${error.message}`);
     }
 
     setLoading(false);
@@ -163,23 +203,16 @@ const Dashboard = () => {
     }
 
     try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:5000/api/items/${itemId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const data = await apiCall(`http://localhost:5000/api/items/${itemId}`, {
+        method: 'DELETE'
       });
 
-      if (response.ok) {
+      if (data) {
         setMessage('Item deleted successfully!');
         fetchItems();
-      } else {
-        const data = await response.json();
-        setMessage(data.message || 'Failed to delete item');
       }
     } catch (error) {
-      setMessage('Network error. Please try again.');
+      setMessage(`Error deleting item: ${error.message}`);
     }
   };
 
@@ -215,6 +248,48 @@ const Dashboard = () => {
     setSelectedStatus('all');
   };
 
+  const exportToCSV = () => {
+    if (items.length === 0) {
+      setMessage('No items to export');
+      return;
+    }
+
+    const csvContent = [
+      // CSV Header
+      ['Name', 'Category', 'Expiry Date', 'Status', 'Days Until Expiry', 'Added Date'],
+      // CSV Data
+      ...items.map(item => {
+        const daysUntilExpiry = getDaysUntilExpiry(item.expiryDate);
+        const status = daysUntilExpiry < 0 ? 'Expired' : 
+                      daysUntilExpiry <= 3 ? 'Urgent' : 
+                      daysUntilExpiry <= 7 ? 'Warning' : 'Good';
+        
+        return [
+          item.name,
+          item.category,
+          formatDate(item.expiryDate),
+          status,
+          daysUntilExpiry,
+          formatDate(item.createdAt)
+        ];
+      })
+    ].map(row => row.join(',')).join('\n');
+
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `smartexpiry-inventory-${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setMessage('Inventory exported successfully!');
+    setTimeout(() => setMessage(''), 3000);
+  };
+
   if (!user) {
     return <div className="dashboard-container">Please log in to access the dashboard.</div>;
   }
@@ -236,6 +311,13 @@ const Dashboard = () => {
               </span>
             )}
           </div>
+          <button 
+            className="settings-btn"
+            onClick={() => setShowNotificationSettings(true)}
+            title="Notification Settings"
+          >
+            ⚙️
+          </button>
           <button 
             className="add-item-btn"
             onClick={() => setShowAddForm(!showAddForm)}
@@ -262,13 +344,28 @@ const Dashboard = () => {
             <span className="last-update">Last update: {lastUpdate}</span>
           )}
         </div>
-        <button 
-          onClick={triggerBackgroundJobs}
-          disabled={backgroundJobStatus === 'running'}
-          className="trigger-jobs-btn"
-        >
-          {backgroundJobStatus === 'running' ? 'Running...' : '🔄 Run Background Jobs'}
-        </button>
+        <div className="action-buttons">
+          <button 
+            onClick={triggerBackgroundJobs}
+            disabled={backgroundJobStatus === 'running'}
+            className="trigger-jobs-btn"
+          >
+            {backgroundJobStatus === 'running' ? 'Running...' : '🔄 Run Background Jobs'}
+          </button>
+          <button 
+            onClick={exportToCSV}
+            className="export-btn"
+            disabled={items.length === 0}
+          >
+            📊 Export to CSV
+          </button>
+          <button 
+            onClick={() => setShowAnalytics(true)}
+            className="analytics-btn"
+          >
+            📈 Analytics
+          </button>
+        </div>
       </div>
 
       {/* Search and Filter Section */}
@@ -410,6 +507,18 @@ const Dashboard = () => {
             setShowNotifications(false);
             fetchNotificationCount();
           }}
+        />
+      )}
+
+      {showNotificationSettings && (
+        <NotificationSettings 
+          onClose={() => setShowNotificationSettings(false)}
+        />
+      )}
+
+      {showAnalytics && (
+        <Analytics 
+          onClose={() => setShowAnalytics(false)}
         />
       )}
     </div>

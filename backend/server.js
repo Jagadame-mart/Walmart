@@ -32,7 +32,9 @@ const userSchema = new mongoose.Schema({
   notificationSettings: {
     enabled: { type: Boolean, default: true },
     daysBeforeExpiry: { type: Number, default: 3 },
-    emailNotifications: { type: Boolean, default: false }
+    emailNotifications: { type: Boolean, default: false },
+    soundEnabled: { type: Boolean, default: true },
+    desktopNotifications: { type: Boolean, default: true }
   },
   createdAt: { type: Date, default: Date.now }
 });
@@ -175,21 +177,46 @@ cron.schedule('0 * * * *', async () => {
 const requireAuth = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
+    console.log('🔐 Auth check for:', req.method, req.path);
+    console.log('Token present:', !!token);
+    
     if (!token) {
+      console.log('❌ No token provided');
       return res.status(401).json({ message: 'Access denied. No token provided.' });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    console.log('✅ Token verified for user:', decoded.userId);
+    
     const user = await User.findById(decoded.userId);
     
     if (!user) {
-      return res.status(401).json({ message: 'Invalid token.' });
+      console.log('❌ User not found for token');
+      return res.status(401).json({ message: 'Invalid token. User not found.' });
     }
     
+    console.log('✅ User authenticated:', user.name);
     req.user = user;
     next();
   } catch (error) {
-    res.status(401).json({ message: 'Invalid token.' });
+    console.log('❌ Auth error:', error.name, error.message);
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ 
+        message: 'Token expired. Please log in again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    } else if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ 
+        message: 'Invalid token format.',
+        code: 'INVALID_TOKEN'
+      });
+    } else {
+      console.error('Auth middleware error:', error);
+      return res.status(401).json({ 
+        message: 'Authentication failed.',
+        code: 'AUTH_ERROR'
+      });
+    }
   }
 };
 
@@ -244,7 +271,7 @@ app.post('/api/login', async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '1h' }
+      { expiresIn: '7d' }
     );
 
     res.json({ 
@@ -265,7 +292,15 @@ app.post('/api/login', async (req, res) => {
 // Item Routes
 app.post('/api/items', requireAuth, async (req, res) => {
   try {
+    console.log('📝 Adding new item:', req.body);
+    console.log('👤 User:', req.user.name);
+    
     const { name, category, expiryDate } = req.body;
+
+    // Validate required fields
+    if (!name || !expiryDate) {
+      return res.status(400).json({ message: 'Name and expiry date are required' });
+    }
 
     // Generate unique item ID
     const itemId = new mongoose.Types.ObjectId().toString();
@@ -291,6 +326,7 @@ app.post('/api/items', requireAuth, async (req, res) => {
     });
 
     await item.save();
+    console.log('✅ Item saved successfully:', item._id);
 
     res.status(201).json({ 
       message: 'Item added successfully',
@@ -303,8 +339,8 @@ app.post('/api/items', requireAuth, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Add item error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('❌ Add item error:', error);
+    res.status(500).json({ message: 'Server error: ' + error.message });
   }
 });
 
@@ -490,16 +526,65 @@ app.get('/api/categories', requireAuth, async (req, res) => {
 // Manual trigger for background jobs (for testing)
 app.post('/api/trigger-background-jobs', requireAuth, async (req, res) => {
   try {
-    console.log('🔄 Manual trigger of background jobs...');
-    await updateItemStatuses();
-    await generateExpiryNotifications();
-    await cleanupOldNotifications();
+    console.log('🔄 Manual trigger of background jobs by user:', req.user.name);
+    console.log('⏰ Starting background jobs...');
     
+    await updateItemStatuses();
+    console.log('✅ Status updates completed');
+    
+    await generateExpiryNotifications();
+    console.log('✅ Notifications generated');
+    
+    await cleanupOldNotifications();
+    console.log('✅ Cleanup completed');
+    
+    console.log('🎉 All background jobs completed successfully');
     res.json({ message: 'Background jobs completed successfully' });
   } catch (error) {
-    console.error('Background jobs error:', error);
-    res.status(500).json({ message: 'Background jobs failed' });
+    console.error('❌ Background jobs error:', error);
+    res.status(500).json({ message: 'Background jobs failed: ' + error.message });
   }
+});
+
+// User Settings Routes
+app.get('/api/user/settings', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    res.json({ notificationSettings: user.notificationSettings });
+  } catch (error) {
+    console.error('Get user settings error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.put('/api/user/settings', requireAuth, async (req, res) => {
+  try {
+    const { notificationSettings } = req.body;
+    
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { notificationSettings },
+      { new: true }
+    );
+
+    res.json({ 
+      message: 'Settings updated successfully',
+      notificationSettings: user.notificationSettings 
+    });
+  } catch (error) {
+    console.error('Update user settings error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'SmartExpiry server is running',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
 });
 
 app.listen(PORT, () => {

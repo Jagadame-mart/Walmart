@@ -24,6 +24,13 @@ const Notifications = ({ onClose }) => {
         const data = await response.json();
         setNotifications(data);
         setUnreadCount(data.filter(n => !n.read).length);
+      } else {
+        const errorData = await response.json();
+        if (errorData.code === 'TOKEN_EXPIRED' || errorData.code === 'INVALID_TOKEN') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.reload();
+        }
       }
     } catch (error) {
       console.error('Error fetching notifications:', error);
@@ -33,14 +40,23 @@ const Notifications = ({ onClose }) => {
   const checkExpiringItems = async () => {
     try {
       const token = localStorage.getItem('token');
-      await fetch('http://localhost:5000/api/check-expiring-items', {
+      const response = await fetch('http://localhost:5000/api/check-expiring-items', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
       
-      // Refresh notifications after checking
-      fetchNotifications();
+      if (response.ok) {
+        // Refresh notifications after checking
+        fetchNotifications();
+      } else {
+        const errorData = await response.json();
+        if (errorData.code === 'TOKEN_EXPIRED' || errorData.code === 'INVALID_TOKEN') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.reload();
+        }
+      }
     } catch (error) {
       console.error('Error checking expiring items:', error);
     }
@@ -61,6 +77,13 @@ const Notifications = ({ onClose }) => {
           prev.map(n => n._id === notificationId ? { ...n, read: true } : n)
         );
         setUnreadCount(prev => Math.max(0, prev - 1));
+      } else {
+        const errorData = await response.json();
+        if (errorData.code === 'TOKEN_EXPIRED' || errorData.code === 'INVALID_TOKEN') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.reload();
+        }
       }
     } catch (error) {
       console.error('Error marking notification as read:', error);
@@ -81,6 +104,13 @@ const Notifications = ({ onClose }) => {
       if (response.ok) {
         setNotifications(prev => prev.map(n => ({ ...n, read: true })));
         setUnreadCount(0);
+      } else {
+        const errorData = await response.json();
+        if (errorData.code === 'TOKEN_EXPIRED' || errorData.code === 'INVALID_TOKEN') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.reload();
+        }
       }
     } catch (error) {
       console.error('Error marking all notifications as read:', error);
