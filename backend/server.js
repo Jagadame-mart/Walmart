@@ -15,7 +15,7 @@ app.use(cors());
 app.use(express.json());
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://sowmyadevalla49:nG2kBIljq1mzZhCB@cluster0.owihemw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://sowmyadevalla49:Sowmya@cluster0.owihemw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
